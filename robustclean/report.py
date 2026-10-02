@@ -84,9 +84,17 @@ def build_report(cleaner, df: pd.DataFrame, sensitivity: pd.DataFrame | None = N
     lines.append(f"- 参与检测的变量（{len(cleaner.columns_)} 个）：{'、'.join(map(str, cleaner.columns_))}")
     if cleaner.group_column:
         lines.append(f"- 分组检测：按「{cleaner.group_column}」分为 {cleaner.n_groups_} 组，组内独立判定")
+    n_missing = getattr(cleaner, "n_all_missing_", 0)
+    if n_missing:
+        lines.append(
+            f"- 整行缺失、未参与检测的样本：{n_missing} 个"
+            "（按缺失数据处理，不计入异常值，也不计入剔除）"
+        )
     if cleaner.imputed_counts_:
         detail = "、".join(f"{k} {v} 个" for k, v in cleaner.imputed_counts_.items())
-        lines.append(f"- 缺失值：{detail}（**仅用于检测阶段**的临时填补，原始数据未被改动）")
+        lines.append(
+            f"- 部分缺失的值：{detail}（按**组内中位数**临时填补，**仅用于检测阶段**，原始数据未被改动）"
+        )
     lines.append("")
 
     # 2 方法

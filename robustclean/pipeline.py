@@ -116,45 +116,63 @@ class RobustCleaner:
         work = df.reset_index(drop=True)
         X_raw = work[self.columns_].to_numpy(dtype=float)
 
-        # 缺失值：仅用于检测的填补（中位数），不改动用户原始数据
-        X = X_raw.copy()
-        self.imputed_counts_ = {}
-        for j, c in enumerate(self.columns_):
-            col = X[:, j]
-            miss = ~np.isfinite(col)
-            n_miss = int(miss.sum())
-            if n_miss:
-                self.imputed_counts_[c] = n_miss
-                fill = float(np.nanmedian(col)) if np.isfinite(col).any() else 0.0
-                col[miss] = fill
-            X[:, j] = col
+        # 整行缺失的样本不参与检测：它们是缺失数据，不是异常值
+        all_missing = ~np.isfinite(X_raw).any(axis=1)
+        self.n_all_missing_ = int(all_missing.sum())
 
-        n = X.shape[0]
+        n = X_raw.shape[0]
         score_mat = np.full((n, len(self.methods)), np.nan)
         flag_mat = np.zeros((n, len(self.methods)), dtype=bool)
         meta: dict[str, DetectionResult] = {}
+        self.imputed_counts_ = {}
+
+        def prepare(rows: np.ndarray) -> np.ndarray:
+            """组内中位数填补（仅用于检测，不改动用户原始数据）。"""
+            Xg = X_raw[rows].copy()
+            for j, c in enumerate(self.columns_):
+                col = Xg[:, j]
+                miss = ~np.isfinite(col)
+                if not miss.any():
+                    continue
+                fill = float(np.nanmedian(col)) if np.isfinite(col).any() else 0.0
+                col[miss] = fill
+                Xg[:, j] = col
+                self.imputed_counts_[c] = self.imputed_counts_.get(c, 0) + int(miss.sum())
+            return Xg
+
+        def run_block(rows: np.ndarray) -> bool:
+            rows = rows[~all_missing[rows]]
+            if rows.size < 10:  # 样本太少，检测没有统计意义
+                return False
+            for res in self._run_detectors(prepare(rows)):
+                if res.key in self.methods:
+                    meta.setdefault(res.key, res)
+                    pos = self.methods.index(res.key)
+                    score_mat[rows, pos] = res.score
+                    flag_mat[rows, pos] = res.flag
+            return True
 
         if self.group_column and self.group_column in work.columns:
             groups = work[self.group_column].astype(str).to_numpy()
             self.n_groups_ = len(set(groups))
             for g in pd.unique(groups):
                 idx = np.flatnonzero(groups == g)
-                if idx.size < 10:  # 组内样本太少，检测没有统计意义
-                    self.skipped_[f"group:{g}"] = f"样本数 {idx.size} < 10，跳过"
-                    continue
-                for res in self._run_detectors(X[idx]):
-                    if res.key in self.methods:
-                        meta.setdefault(res.key, res)
-                        pos = self.methods.index(res.key)
-                        score_mat[idx, pos] = res.score
-                        flag_mat[idx, pos] = res.flag
+                if not run_block(idx):
+                    valid = int((~all_missing[idx]).sum())
+                    self.skipped_[f"group:{g}"] = f"有效样本数 {valid} < 10，跳过"
         else:
             self.n_groups_ = 1
-            for res in self._run_detectors(X):
-                meta.setdefault(res.key, res)
-                pos = self.methods.index(res.key)
-                score_mat[:, pos] = res.score
-                flag_mat[:, pos] = res.flag
+            if not run_block(np.arange(n)):
+                raise ValueError(f"有效样本数不足（{int((~all_missing).sum())} < 10），无法检测")
+
+        # 未参与检测的样本（整行缺失或所在组样本过少）：分数压到最低，标签保持 False
+        for i in range(len(self.methods)):
+            col = score_mat[:, i]
+            bad = ~np.isfinite(col)
+            if bad.any():
+                good = col[~bad]
+                col[bad] = (float(good.min()) - 1.0) if good.size else 0.0
+                score_mat[:, i] = col
 
         # 组装成 DetectionResult（整表长度），供融合与报告使用
         self.results_ = []
@@ -326,7 +344,12 @@ class RobustCleaner:
 
         outlier_path = outdir / "outliers.csv"
         detail = self.outlier_report(df)
-        detail.loc[mask].to_csv(outlier_path, index=False, encoding="utf-8-sig")
+        # 被剔除的样本：原始数据 + 判定依据，方便逐条核对「到底删了谁」
+        removed_rows = pd.concat(
+            [df.loc[mask].reset_index(drop=True), detail.loc[mask].reset_index(drop=True)],
+            axis=1,
+        )
+        removed_rows.to_csv(outlier_path, index=False, encoding="utf-8-sig")
 
         detail_all = outdir / "outlier_detail_all.csv"
         detail.to_csv(detail_all, index=False, encoding="utf-8-sig")
