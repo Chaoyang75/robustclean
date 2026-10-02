@@ -9,3 +9,10 @@ dist/
 build/
 .DS_Store
 Thumbs.db
+
+# 打包与交付产物：体积大或可重新生成，不进版本库
+*.spec
+packaging/产品包/
+packaging/*.zip
+packaging/使用手册.html
+packaging/论文方法学模板.docx

@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 robustclean = "robustclean.cli:main"
+robustclean-gui = "robustclean.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["robustclean*"]
